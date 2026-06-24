@@ -253,6 +253,53 @@ except AttributeError:
     pass
 
 """
+Deformable body tensors
+
+Shapes assume N = number of volume deformable body instances matched by the
+binding pattern, V = maximum simulation nodes per body, E = maximum simulation
+elements per body. Volume deformables are GPU-only in PhysX.
+"""
+
+try:
+    DEFORMABLE_SIM_NODAL_POSITION = _TT.DEFORMABLE_SIM_NODAL_POSITION
+    """Simulation nodal positions - read/write, GPU. Shape ``(N, V, 3)``,
+    dtype ``float32`` [m]."""
+
+    DEFORMABLE_SIM_NODAL_VELOCITY = _TT.DEFORMABLE_SIM_NODAL_VELOCITY
+    """Simulation nodal velocities - read/write, GPU. Shape ``(N, V, 3)``,
+    dtype ``float32`` [m/s]."""
+
+    DEFORMABLE_SIM_KINEMATIC_TARGET = _TT.DEFORMABLE_SIM_KINEMATIC_TARGET
+    """Simulation kinematic targets - read/write, GPU. Shape ``(N, V, 4)``,
+    dtype ``float32``. Components are ``(x, y, z, is_not_kinematic)``."""
+
+    DEFORMABLE_REST_NODAL_POSITION = _TT.DEFORMABLE_REST_NODAL_POSITION
+    """Rest nodal positions - read-only, GPU. Shape ``(N, R, 3)``, dtype
+    ``float32`` [m]."""
+
+    DEFORMABLE_SIM_ELEMENT_INDICES = _TT.DEFORMABLE_SIM_ELEMENT_INDICES
+    """Simulation tetrahedral element indices - read-only, GPU. Shape
+    ``(N, E, 4)``, dtype ``int32``."""
+except AttributeError:
+    pass
+
+"""
+Deformable material tensors (CPU)
+"""
+
+try:
+    DEFORMABLE_MATERIAL_DYNAMIC_FRICTION = _TT.DEFORMABLE_MATERIAL_DYNAMIC_FRICTION
+    """Deformable material dynamic friction - read/write, CPU. Shape ``(M,)``."""
+
+    DEFORMABLE_MATERIAL_YOUNGS_MODULUS = _TT.DEFORMABLE_MATERIAL_YOUNGS_MODULUS
+    """Deformable material Young's modulus - read/write, CPU. Shape ``(M,)``."""
+
+    DEFORMABLE_MATERIAL_POISSONS_RATIO = _TT.DEFORMABLE_MATERIAL_POISSONS_RATIO
+    """Deformable material Poisson's ratio - read/write, CPU. Shape ``(M,)``."""
+except AttributeError:
+    pass
+
+"""
 Dynamics tensors (GPU)
 """
 
@@ -394,4 +441,15 @@ _CPU_ONLY_TYPES_CANDIDATES: tuple = (
 _RIGID_BODY_OPTIONAL_CPU: tuple = tuple(
     globals()[name] for name in ("RIGID_BODY_INV_MASS", "RIGID_BODY_INV_INERTIA") if name in globals()
 )
-_CPU_ONLY_TYPES: frozenset[TensorType] = frozenset(_CPU_ONLY_TYPES_CANDIDATES + _RIGID_BODY_OPTIONAL_CPU)
+_DEFORMABLE_MATERIAL_CPU: tuple = tuple(
+    globals()[name]
+    for name in (
+        "DEFORMABLE_MATERIAL_DYNAMIC_FRICTION",
+        "DEFORMABLE_MATERIAL_YOUNGS_MODULUS",
+        "DEFORMABLE_MATERIAL_POISSONS_RATIO",
+    )
+    if name in globals()
+)
+_CPU_ONLY_TYPES: frozenset[TensorType] = frozenset(
+    _CPU_ONLY_TYPES_CANDIDATES + _RIGID_BODY_OPTIONAL_CPU + _DEFORMABLE_MATERIAL_CPU
+)

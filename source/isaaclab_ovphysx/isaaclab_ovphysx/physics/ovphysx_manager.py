@@ -218,8 +218,10 @@ class OvPhysxManager(PhysicsManager):
     # physx.clone() in _warmup_and_load().
     # parent_positions is a list of (x, y, z) tuples — one per target.
     _pending_clones: ClassVar[list[tuple[str, list[str], list[tuple[float, float, float]]]]] = []
+    _requires_full_usd_export: ClassVar[bool] = False
     _atexit_registered: ClassVar[bool] = False
     _scene_data_backend: ClassVar[OvPhysxSceneDataBackend | None] = None
+    _step_sync_accepts_sim_time: ClassVar[bool | None] = None
 
     @classmethod
     def get_dt(cls) -> float:
@@ -247,6 +249,16 @@ class OvPhysxManager(PhysicsManager):
                 during the warmup step.
         """
         cls._pending_clones.append((source, targets, parent_positions or []))
+
+    @classmethod
+    def require_full_usd_export(cls) -> None:
+        """Force the next warmup to load every authored environment from USD.
+
+        Some physics schemas, including volume deformables, cannot be replicated
+        by the ovphysx ``physx.clone()`` fast path.  When such an asset is in the
+        scene, the backend falls back to parsing the full USD-authored clone set.
+        """
+        cls._requires_full_usd_export = True
 
     _physx_schemas_registered: ClassVar[bool] = False
 
@@ -300,6 +312,7 @@ class OvPhysxManager(PhysicsManager):
         cls._usd_handle = None
         cls._stage_path = None
         cls._pending_clones = []
+        cls._requires_full_usd_export = False
         # Construct the SceneDataBackend eagerly so :class:`SimulationContext`
         # captures a real instance (not ``None``) when it builds the central
         # :class:`~isaaclab.scene.scene_data_provider.SceneDataProvider` in
@@ -337,7 +350,12 @@ class OvPhysxManager(PhysicsManager):
             return
         dt = cls.get_physics_dt()
         sim_time = PhysicsManager._sim_time
-        cls._physx.step_sync(dt=dt, sim_time=sim_time)
+        if cls._step_sync_accepts_sim_time is None:
+            cls._step_sync_accepts_sim_time = "sim_time" in inspect.signature(cls._physx.step_sync).parameters
+        if cls._step_sync_accepts_sim_time:
+            cls._physx.step_sync(dt=dt, sim_time=sim_time)
+        else:
+            cls._physx.step_sync(dt=dt)
         cls._physx.update_articulations_kinematic()
         PhysicsManager._sim_time += dt
 
@@ -349,8 +367,9 @@ class OvPhysxManager(PhysicsManager):
         cls._usd_handle = None
         cls._stage_path = None
         cls._warmup_done = False
+        cls._requires_full_usd_export = False
         # Drop the SceneDataBackend singleton: its cached ``TensorBinding`` handles
-        # point into the wheel's prior scene which we just ``physx.reset()``-ed.
+        # point into the wheel's prior scene which we just cleared.
         # The next :class:`SimulationContext` re-creates the backend in
         # :meth:`initialize`. Matches Newton's lifecycle.
         cls._scene_data_backend = None
@@ -365,8 +384,8 @@ class OvPhysxManager(PhysicsManager):
     def _release_physx(cls) -> None:
         """Soft-reset the ovphysx runtime stage; keep the C++ instance alive.
 
-        Calls ``physx.reset()`` to clear the loaded scene, but does **not** drop
-        the Python reference.  The cached :class:`ovphysx.PhysX` is reused by the
+        Clears the loaded scene, but does **not** drop the Python reference.
+        The cached :class:`ovphysx.PhysX` is reused by the
         next :class:`~isaaclab.sim.SimulationContext` via the reuse path in
         :meth:`_warmup_and_load`.  Safe to call multiple times.
 
@@ -381,9 +400,21 @@ class OvPhysxManager(PhysicsManager):
         at process exit.  Remove this workaround once the wheel ships a
         namespace-isolated Carbonite (different soname / hidden visibility).
         """
-        if cls._physx is not None:
+        cls._reset_physx_stage()
+
+    @classmethod
+    def _reset_physx_stage(cls) -> None:
+        """Clear the loaded ovphysx stage across supported wheel API versions."""
+        if cls._physx is None:
+            return
+        if hasattr(cls._physx, "reset_stage"):
+            op = cls._physx.reset_stage()
+        elif hasattr(cls._physx, "reset"):
             op = cls._physx.reset()
-            cls._physx.wait_op(op)
+        else:
+            raise RuntimeError("ovphysx.PhysX does not expose reset_stage() or reset().")
+        cls._physx.wait_op(op)
+        cls._usd_handle = None
 
     @classmethod
     def get_physx_instance(cls) -> Any:
@@ -552,42 +583,52 @@ class OvPhysxManager(PhysicsManager):
         # ``create_tensor_binding`` call into an O(N) USD enumeration -- the
         # hang you'd see at large env counts.
         #
-        # The workaround: strip ``/World/envs/env_<i>`` for i != 0 from the
-        # exported file before handing it to the wheel.  Sensors that read
-        # USD directly (RayCaster, Camera, ContactSensor discovery) still see
-        # the full N-env stage; only the wheel-side physics ingestion is
-        # scoped to env_0, and ``physx.clone()`` re-populates env_1..N in
-        # the physics runtime with proper clone lineage (which is what the
-        # binding fast path expects).
+        # The default workaround strips ``/World/envs/env_<i>`` for i != 0
+        # from the exported file before handing it to the wheel. Sensors that
+        # read USD directly (RayCaster, Camera, ContactSensor discovery) still
+        # see the full N-env stage; only the wheel-side physics ingestion is
+        # scoped to env_0, and ``physx.clone()`` re-populates env_1..N in the
+        # physics runtime with proper clone lineage (which is what the binding
+        # fast path expects). Assets that cannot use ``physx.clone()``, such as
+        # volume deformables, request full USD export instead.
         cls._tmp_dir = tempfile.TemporaryDirectory(prefix="isaaclab_ovphysx_")
         stage_file = os.path.join(cls._tmp_dir.name, "scene.usda")
-        cls._export_env0_only_stage(sim.stage, stage_file)
+        if cls._requires_full_usd_export:
+            sim.stage.Export(stage_file)
+            logger.info("OvPhysxManager: exported full USD stage to %s", stage_file)
+        else:
+            cls._export_env0_only_stage(sim.stage, stage_file)
+            logger.info("OvPhysxManager: exported env_0-scoped USD stage to %s", stage_file)
         cls._stage_path = stage_file
-        logger.info("OvPhysxManager: exported env_0-scoped USD stage to %s", stage_file)
 
         if cls._physx is None:
             cls._construct_physx(ovphysx_device, gpu_index)
             cls._locked_device = ovphysx_device
         else:
             # Reuse path: the cached PhysX may still hold the prior stage (the
-            # wheel allows only one loaded USD at a time).  ``physx.reset()`` is
-            # idempotent on an already-cleared stage and required when this is
-            # a second :meth:`_warmup_and_load` within the same SimulationContext
+            # wheel allows only one loaded USD at a time).  Clearing the stage is
+            # idempotent on an already-cleared stage and required when this is a
+            # second :meth:`_warmup_and_load` within the same SimulationContext
             # (e.g. when a caller manually clears ``_warmup_done`` to force a
             # re-warmup).
-            op = cls._physx.reset()
-            cls._physx.wait_op(op)
+            cls._reset_physx_stage()
 
         usd_handle, op_idx = cls._physx.add_usd(stage_file)
         cls._physx.wait_op(op_idx)
         cls._usd_handle = usd_handle
         logger.info("OvPhysxManager: loaded USD into ovphysx (device=%s)", ovphysx_device)
 
-        # Replay pending physics clones registered by ovphysx_replicate().
-        # The USD stage contains only env_0's physics; env_1..N are empty
-        # Xform containers.  physx.clone() creates the remaining environments
-        # in the physics runtime without modifying the USD file.
-        if cls._pending_clones:
+        # Replay pending physics clones registered by ovphysx_replicate() when
+        # the USD stage contains only env_0's physics. Full-export scenes
+        # already contain the USD-authored clones, so replaying physx.clone()
+        # would duplicate or reject those paths.
+        if cls._pending_clones and cls._requires_full_usd_export:
+            logger.info(
+                "OvPhysxManager: skipping %d pending physx.clone() operations because full USD export is required",
+                len(cls._pending_clones),
+            )
+            cls._pending_clones = []
+        elif cls._pending_clones:
             # The cfg-level OvPhysX replicator registers pending clones for physics
             # regardless of whether USD copies were also queued for rendering. Execute
             # unconditionally — no USD content heuristic is needed.
@@ -649,23 +690,33 @@ class OvPhysxManager(PhysicsManager):
 
         ovphysx = import_ovphysx()
 
-        physx_kwargs = {"device": ovphysx_device}
         physx_signature = inspect.signature(ovphysx.PhysX)
         physx_parameters = physx_signature.parameters
+
+        physx_kwargs = {}
+        if "device" in physx_parameters:
+            physx_kwargs["device"] = ovphysx_device
+        elif ovphysx_device == "cpu" and hasattr(ovphysx.PhysX, "set_cpu_mode"):
+            ovphysx.PhysX.set_cpu_mode(True)
+
         if "active_cuda_gpus" in physx_parameters:
             if ovphysx_device == "gpu":
-                # ovphysx 0.4 accepts a comma-separated CUDA ordinal string; IsaacLab selects one GPU.
+                # ovphysx accepts a comma-separated CUDA ordinal string; IsaacLab selects one GPU.
                 physx_kwargs["active_cuda_gpus"] = str(gpu_index)
+        elif "gpu_index" in physx_parameters:
+            physx_kwargs["gpu_index"] = gpu_index
+
+        if "config" in physx_parameters and hasattr(ovphysx, "PhysXConfig"):
+            if ovphysx_device == "gpu":
                 physx_kwargs["config"] = ovphysx.PhysXConfig(
                     carbonite_overrides={
                         "/physics/suppressReadback": True,
                         "/physics/suppressFabricUpdate": True,
                     }
                 )
-        elif "gpu_index" in physx_parameters:
-            physx_kwargs["gpu_index"] = gpu_index
 
         cls._physx = ovphysx.PhysX(**physx_kwargs)
+        cls._step_sync_accepts_sim_time = "sim_time" in inspect.signature(cls._physx.step_sync).parameters
 
         # Without worker threads the stepper runs simulate()+fetchResults()
         # synchronously, blocking the calling thread for the full GPU step time.
