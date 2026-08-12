@@ -558,6 +558,14 @@ def test_manager_supports_legacy_warmup_api():
     assert calls == ["warmup_gpu"]
 
 
+def test_manager_rejects_missing_warmup_api():
+    """An unsupported runtime reports both expected entry points explicitly."""
+    from isaaclab_ov.physics import OvPhysxManager
+
+    with pytest.raises(AttributeError, match=r"neither warmup\(\) nor legacy warmup_gpu\(\)"):
+        OvPhysxManager._warmup_physx(SimpleNamespace())
+
+
 def test_manager_destroys_ovstage_when_population_fails(monkeypatch):
     """A failed in-memory population does not leak its OVStage allocation."""
     from isaaclab_ov.physics import OvPhysxManager

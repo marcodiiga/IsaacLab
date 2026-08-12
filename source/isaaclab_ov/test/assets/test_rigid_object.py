@@ -1296,4 +1296,5 @@ def test_warmup_attach_stage_not_called_for_cpu(monkeypatch):
         OvPhysxManager._warmup_done = False
         sim.reset()
 
+        assert OvPhysxManager._warmup_done is True
         warmup_spy.assert_not_called()

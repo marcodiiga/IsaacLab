@@ -544,10 +544,12 @@ class OvPhysxManager(PhysicsManager):
 
     @staticmethod
     def _warmup_physx(physx: Any) -> None:
-        """Warm a GPU runtime through its current or legacy API."""
+        """Warm a runtime through its current or legacy API."""
         warmup = getattr(physx, "warmup", None)
         if warmup is None:
-            warmup = physx.warmup_gpu
+            warmup = getattr(physx, "warmup_gpu", None)
+        if warmup is None:
+            raise AttributeError("OVPhysX exposes neither warmup() nor legacy warmup_gpu()")
         warmup()
 
     @classmethod
