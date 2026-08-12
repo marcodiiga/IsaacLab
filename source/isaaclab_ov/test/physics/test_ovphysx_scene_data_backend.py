@@ -533,7 +533,7 @@ def test_manager_attaches_and_releases_owned_ovstage(monkeypatch):
 
 def test_manager_prefers_current_warmup_api():
     """The current warmup API wins when both API generations are visible."""
-    from isaaclab_ovphysx.physics import OvPhysxManager
+    from isaaclab_ov.physics import OvPhysxManager
 
     calls = []
     physx = SimpleNamespace(
@@ -548,7 +548,7 @@ def test_manager_prefers_current_warmup_api():
 
 def test_manager_supports_legacy_warmup_api():
     """The released OVPhysX runtime keeps using its GPU-only warmup API."""
-    from isaaclab_ovphysx.physics import OvPhysxManager
+    from isaaclab_ov.physics import OvPhysxManager
 
     calls = []
     physx = SimpleNamespace(warmup_gpu=lambda: calls.append("warmup_gpu"))
