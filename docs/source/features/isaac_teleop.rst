@@ -107,9 +107,11 @@ How It Works
 The :class:`~isaaclab_teleop.IsaacTeleopDevice` is the main integration point between Isaac Teleop
 and Isaac Lab. It composes three collaborators:
 
-* **XrAnchorManager** -- creates and synchronizes an XR anchor prim in the simulation, and
-  computes the ``world_T_anchor`` transform matrix that maps XR tracking data into the simulation
-  coordinate frame.
+* **XrAnchorManager** -- computes the ``world_T_anchor`` transform matrix that maps XR tracking
+  data into the simulation coordinate frame. When Kit is available, it also creates and
+  synchronizes the XR anchor prim so dynamic anchor transforms remain correct in live and replay
+  workflows. In a kitless process, its lazy stage-service imports safely fall back to the configured
+  static transform.
 
 * **TeleopSessionLifecycle** -- builds the retargeting pipeline, acquires OpenXR handles from
   Isaac Sim's XR bridge (or, in standalone mode, creates its own OpenXR session through the
@@ -1467,7 +1469,9 @@ for the pulse).
 
 .. code-block:: python
 
+   from isaaclab.scene import InteractiveSceneCfg
    from isaaclab.sensors import ContactSensorCfg
+   from isaaclab.utils import configclass
    from isaaclab_teleop import ControllerHapticFeedbackCfg
 
    @configclass
@@ -1479,12 +1483,12 @@ for the pulse).
            prim_path="{ENV_REGEX_NS}/Robot/right_hand_.*_link", update_period=0.0, history_length=3
        )
 
-   # in the env cfg __post_init__:
-   self.scene.robot.spawn.activate_contact_sensors = True
-   self.haptic_feedback = ControllerHapticFeedbackCfg(
-       left_sensor_name="left_hand_contact",
-       right_sensor_name="right_hand_contact",
-   )
+   def enable_controller_haptics(env_cfg) -> None:
+       env_cfg.scene.robot.spawn.activate_contact_sensors = True
+       env_cfg.haptic_feedback = ControllerHapticFeedbackCfg(
+           left_sensor_name="left_hand_contact",
+           right_sensor_name="right_hand_contact",
+       )
 
 Enabled on the two G1 loco-manipulation teleop environments
 (``IsaacContrib-PickPlace-Locomanipulation-G1-Abs``,
@@ -1502,12 +1506,19 @@ Thumb..Pinky (matched from the sensor's body names via ``finger_order``) into a
 
 .. code-block:: python
 
+   from isaaclab.assets import RigidObjectCfg
+   from isaaclab.scene import InteractiveSceneCfg
    from isaaclab.sensors import ContactSensorCfg
+   from isaaclab.sim.spawners.from_files import UsdFileCfg
+   from isaaclab.utils import configclass
    from isaaclab_teleop import GloveHapticFeedbackCfg
 
    @configclass
    class MySceneCfg(InteractiveSceneCfg):
-       object = RigidObjectCfg(prim_path="{ENV_REGEX_NS}/Object", ...)
+       object = RigidObjectCfg(
+           prim_path="{ENV_REGEX_NS}/Object",
+           spawn=UsdFileCfg(usd_path="/path/to/object.usd"),
+       )
        left_hand_contact = ContactSensorCfg(
            prim_path="{ENV_REGEX_NS}/Robot/.*L_(thumb_distal|index_intermediate|"
            "middle_intermediate|ring_intermediate|pinky_intermediate)_link",
@@ -1515,16 +1526,17 @@ Thumb..Pinky (matched from the sensor's body names via ``finger_order``) into a
            update_period=0.0, history_length=3,
        )
        right_hand_contact = ContactSensorCfg(
-           prim_path="{ENV_REGEX_NS}/Robot/.*R_(...)_link",
+           prim_path="{ENV_REGEX_NS}/Robot/.*R_(thumb_distal|index_intermediate|"
+           "middle_intermediate|ring_intermediate|pinky_intermediate)_link",
            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
            update_period=0.0, history_length=3,
        )
 
-   # in the env cfg __post_init__:
-   self.haptic_feedback = GloveHapticFeedbackCfg(
-       left_sensor_name="left_hand_contact",
-       right_sensor_name="right_hand_contact",
-   )
+   def enable_glove_haptics(env_cfg) -> None:
+       env_cfg.haptic_feedback = GloveHapticFeedbackCfg(
+           left_sensor_name="left_hand_contact",
+           right_sensor_name="right_hand_contact",
+       )
 
 Enabled on the two GR1T2 pick-place teleop environments
 (``IsaacContrib-PickPlace-GR1T2-Abs``, ``IsaacContrib-PickPlace-GR1T2-WaistEnabled-Abs``).
@@ -1941,6 +1953,7 @@ See the :ref:`isaaclab_teleop-api` for full class and function documentation:
 
 * :class:`~isaaclab_teleop.IsaacTeleopCfg`
 * :class:`~isaaclab_teleop.IsaacTeleopDevice`
+* :class:`~isaaclab_teleop.TeleopStepInfo`
 * :func:`~isaaclab_teleop.create_isaac_teleop_device`
 * :class:`~isaaclab_teleop.ControlEvents`
 * :class:`~isaaclab_teleop.SupportsControlEvents`

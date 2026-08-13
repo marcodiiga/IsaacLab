@@ -1300,6 +1300,7 @@ def _run_single_replay(
         callbacks={},
         cloudxr_env_file=None,
         auto_launch_cloudxr=False,
+        use_kit_xr_bridge=False,
         mcap_replay_path=args_cli.replay_file,
         enable_debug_visualization=args_cli.enable_debug_visualization,
     )

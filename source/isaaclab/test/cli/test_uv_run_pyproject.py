@@ -30,10 +30,16 @@ def _root_pyproject() -> dict:
         return tomllib.load(f)
 
 
+def _root_lock() -> dict:
+    """Load the root development ``uv.lock``."""
+    with (_repo_root() / "uv.lock").open("rb") as f:
+        return tomllib.load(f)
+
+
 def test_uv_run_extra_names_match_documented_workflow():
-    """Docs must only reference ``uv run --extra`` names that pyproject defines."""
+    """Docs must only reference root ``--extra`` names that pyproject defines."""
     repo_root = _repo_root()
-    docs = (repo_root / "docs/source/setup/installation/index.rst").read_text(encoding="utf-8")
+    docs = "\n".join(path.read_text(encoding="utf-8") for path in (repo_root / "docs/source").rglob("*.rst"))
     documented_extras = set(re.findall(r"--extra\s+([A-Za-z0-9_-]+)", docs))
     optional_dependencies = _root_pyproject()["project"]["optional-dependencies"]
 
@@ -59,6 +65,7 @@ def test_uv_run_exposes_centralized_feature_extras():
         "ovrtx",
         "mimic",
         "teleop",
+        "teleop-headless",
         "rlinf",
         "tetrahedralization",
         "all",
@@ -105,6 +112,7 @@ def test_all_extra_aggregates_backends_rl_libraries_and_visualizers():
         "rlinf",
         "mimic",
         "teleop",
+        "teleop-headless",
         "tetrahedralization",
         "video",
         "leapp",
@@ -248,6 +256,43 @@ def test_uv_run_teleop_extra_bundles_isaacsim():
     # record_demos.py imports isaaclab_mimic at module level; robomimic stays in ``mimic``.
     assert "isaaclab-mimic" in teleop
     assert not any(dep.startswith("robomimic") for dep in teleop)
+
+
+def test_uv_run_teleop_headless_extra_excludes_interactive_runtimes():
+    """``--extra teleop-headless`` provides retargeting without Kit, UI, or CloudXR."""
+    optional_dependencies = _root_pyproject()["project"]["optional-dependencies"]
+    teleop_headless = optional_dependencies["teleop-headless"]
+
+    assert "isaaclab-teleop" in teleop_headless
+    assert any(dep.startswith("isaacteleop[retargeters]~=1.4.0") for dep in teleop_headless)
+    assert any(dep.startswith("dex-retargeting==0.5.0") for dep in teleop_headless)
+    assert not any(dep.startswith("isaacsim") for dep in teleop_headless)
+    isaacteleop = next(dep for dep in teleop_headless if dep.startswith("isaacteleop"))
+    assert "[retargeters]" in isaacteleop
+    assert "cloudxr" not in isaacteleop.lower()
+    assert ",ui" not in isaacteleop.lower()
+
+
+def test_uv_run_teleop_extras_can_be_combined():
+    """Full and headless teleop extras select a compatible union of features."""
+    optional_dependencies = _root_pyproject()["project"]["optional-dependencies"]
+    full = next(dep for dep in optional_dependencies["teleop"] if dep.startswith("isaacteleop"))
+    headless = next(dep for dep in optional_dependencies["teleop-headless"] if dep.startswith("isaacteleop"))
+
+    assert "[retargeters,ui,cloudxr]" in full
+    assert "[retargeters]" in headless
+    assert _root_pyproject()["tool"]["uv"].get("conflicts") is None
+
+
+def test_uv_lock_records_teleop_headless_dependency_boundary():
+    """The frozen lock must preserve the headless extra's exact feature selection."""
+    root_package = next(package for package in _root_lock()["package"] if package["name"] == "isaaclab-dev")
+    dependencies = root_package["optional-dependencies"]["teleop-headless"]
+    dependencies_by_name = {dependency["name"]: dependency for dependency in dependencies}
+
+    assert set(dependencies_by_name) == {"dex-retargeting", "isaaclab-teleop", "isaacteleop"}
+    assert dependencies_by_name["isaacteleop"]["extra"] == ["retargeters"]
+    assert "isaacsim" not in dependencies_by_name
 
 
 def test_uv_run_base_dependencies_cover_newton_rsl_rl_training():

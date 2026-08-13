@@ -141,9 +141,9 @@ to capture demonstrations, and ``replay`` to play a dataset back. :ref:`The next
 
 .. note::
 
-   ``teleop`` cannot be combined with ``ov`` or ``ovphysx`` in a single ``uv run``: the
-   bundled Isaac Sim pins ``packaging==26.0`` while those runtimes require ``<24``. Install
-   the OV runtimes separately when you need them.
+   Extras can be combined in one environment. The ``teleop`` extra provides the full Isaac Sim,
+   UI, and CloudXR workflow. For custom replay or retargeting applications that use an OV backend
+   without Kit XR, combine ``teleop-headless`` with ``ov`` or ``ovphysx`` instead.
 
 Complete these steps first:
 
@@ -486,7 +486,7 @@ choose the tab that matches your hardware.
 
          .. code-block:: bash
 
-            git checkout <client_app_version>
+            git checkout v3.0.0
 
       #. Follow the README in the repository to build and install the app on your Apple Vision
          Pro.

@@ -29,6 +29,7 @@ Do not copy migration tables into answers from memory. Read the official migrati
 5. Apply the smallest focused migration change.
 6. Run a targeted smoke test or import test. For direct Isaac Sim imports, ensure the test or script starts `AppLauncher` before enabling extensions. For example, run an app-launching test with `uv run --extra isaacsim --with pytest python -m pytest PATH_TO_TEST`.
 7. If the official docs are missing a recurring migration issue, update `docs/source/migration/migrating_to_isaaclab_3-0.rst` instead of expanding this skill with standalone documentation.
+8. Keep migration examples complete: use concrete constructor arguments and full call signatures rather than placeholder ellipses.
 
 ## Validation
 

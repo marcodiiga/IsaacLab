@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from .control_events import _NO_OP_EVENTS, ControlEvents
 from .isaac_teleop_cfg import IsaacTeleopCfg
+from .step_info import TeleopStepInfo
 from .teleop_message_processor import TeleopMessageProcessor
 
 if TYPE_CHECKING:
@@ -120,6 +121,23 @@ def _execution_events_to_control(ee: ExecutionEvents) -> ControlEvents:
     return ControlEvents(is_active=is_active, should_reset=ee.reset)
 
 
+def _snapshot_step_info(info: Any) -> TeleopStepInfo:
+    """Copy optional Isaac Teleop metadata into Isaac Lab's stable public type."""
+    worker_exception = getattr(info, "worker_exception", None)
+    return TeleopStepInfo(
+        returned_frame_id=getattr(info, "returned_frame_id", None),
+        submitted_frame_id=getattr(info, "submitted_frame_id", None),
+        returned_age_frames=getattr(info, "returned_age_frames", None),
+        returned_age_s=getattr(info, "returned_age_s", None),
+        compute_duration_s=getattr(info, "compute_duration_s", None),
+        dropped_submissions=getattr(info, "dropped_submissions", 0),
+        ran_synchronously=getattr(info, "ran_synchronously", False),
+        frame_deadline_miss=getattr(info, "frame_deadline_miss", False),
+        worker_failed=worker_exception is not None,
+        worker_error_type=type(worker_exception).__name__ if worker_exception is not None else None,
+    )
+
+
 class TeleopSessionLifecycle:
     """Manages the IsaacTeleop session lifecycle.
 
@@ -129,7 +147,7 @@ class TeleopSessionLifecycle:
     2. Adding a parallel ``ControllersSource`` for button-state access
     3. Building the optional ``teleop_control_pipeline`` for headset-driven
        start/stop/reset via a message channel
-    4. Acquiring OpenXR handles from Kit's XR bridge extension
+    4. Selecting Kit XR, standalone OpenXR, or replay session setup
     5. Creating, entering, and exiting the ``TeleopSession``
     6. Building external inputs for pipeline leaf nodes (e.g. world-to-anchor transform)
     7. Stepping the session and extracting the flattened action tensor
@@ -267,6 +285,7 @@ class TeleopSessionLifecycle:
         self._last_right_controller = None
         self._last_left_controller = None
         self._last_step_result: dict | None = None
+        self._last_step_info: TeleopStepInfo | None = None
         self._session_start_deferred_logged = False
         # Monotonic deadline gating session re-creation after a step failure
         self._restart_holdoff_until = 0.0
@@ -384,6 +403,22 @@ class TeleopSessionLifecycle:
         return self._last_step_result
 
     @property
+    def last_step_info(self) -> TeleopStepInfo | None:
+        """Metadata from the latest teleop step, or ``None`` before a session starts.
+
+        In pipelined execution, ``submitted_frame_id`` identifies the request
+        submitted by the latest :meth:`step` call while ``returned_frame_id``
+        identifies the completed result that call returned. Failure metadata
+        remains available after a dead session is torn down and until a new
+        session starts or :meth:`stop` is called.
+        """
+        if self._session is not None:
+            info = getattr(self._session, "last_step_info", None)
+            if info is not None:
+                self._last_step_info = _snapshot_step_info(info)
+        return self._last_step_info
+
+    @property
     def has_control_channel(self) -> bool:
         """Whether a message-channel-based control pipeline is configured."""
         return self._message_processor is not None
@@ -463,13 +498,12 @@ class TeleopSessionLifecycle:
 
         Builds the retargeting pipeline, wraps it with a parallel
         ``ControllersSource`` for button-state access, builds the optional
-        ``teleop_control_pipeline`` for message-channel control, attempts
-        to acquire OpenXR handles, and opens the retargeting tuning UI if
-        retargeters are configured.
+        ``teleop_control_pipeline`` for message-channel control, starts the
+        configured live, standalone, or replay session, and opens the
+        retargeting tuning UI if retargeters are configured.
 
-        If the OpenXR handles are not yet available (e.g. user hasn't clicked
-        "Start AR"), session creation is deferred and will be retried on each
-        :meth:`step` call.
+        For Kit XR only, session creation is deferred when bridge handles are
+        unavailable and retried on each :meth:`step` call.
         """
         # Measure the workstation before anything expensive starts. Any notice is
         # queued now and delivered when the client connects. The queue is not
@@ -496,6 +530,7 @@ class TeleopSessionLifecycle:
         self._last_right_controller = None
         self._last_left_controller = None
         self._last_step_result = None
+        self._last_step_info = None
 
         self._pipeline = self._build_combined_pipeline(user_pipeline)
 
@@ -569,6 +604,7 @@ class TeleopSessionLifecycle:
         self._teleop_control_pipeline = None
         self._message_processor = None
         self._last_step_result = None
+        self._last_step_info = None
         self._last_left_controller = None
         self._haptic_sink = None
         self._haptic_tracker = None
@@ -1089,10 +1125,9 @@ class TeleopSessionLifecycle:
     ) -> torch.Tensor | None:
         """Execute one step of the teleop session and return the action tensor.
 
-        If the session has not been started yet (because OpenXR handles were
-        not available), this method will attempt to start it.  Once the user
-        clicks "Start AR" and the handles become available, the session is
-        created transparently.
+        If the configured session has not started, this method attempts to
+        start it. For Kit XR, creation remains deferred until bridge handles
+        become available. Standalone and replay sessions start directly.
 
         If the underlying OpenXR session is torn down externally (e.g. the
         user clicks "Stop AR"), the error is caught, the session is cleaned
@@ -1201,6 +1236,9 @@ class TeleopSessionLifecycle:
         the user restarts AR.
         """
         if self._session is not None:
+            info = getattr(self._session, "last_step_info", None)
+            if info is not None:
+                self._last_step_info = _snapshot_step_info(info)
             try:
                 self._session.__exit__(None, None, None)
             except Exception as e:

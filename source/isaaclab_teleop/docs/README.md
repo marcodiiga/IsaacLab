@@ -1,8 +1,8 @@
 # Isaac Lab Teleop
 
 `isaaclab_teleop` integrates the [IsaacTeleop](https://github.com/NVIDIA/IsaacTeleop) retargeting
-framework with Isaac Lab, providing a single teleoperation device class that manages OpenXR sessions,
-XR anchor synchronization, retargeting pipelines, and action-tensor generation.
+framework with Isaac Lab, providing a single teleoperation device class that manages live or replay
+sessions, optional XR anchor synchronization, retargeting pipelines, and action-tensor generation.
 
 ## Key Features
 
@@ -28,74 +28,73 @@ XR anchor synchronization, retargeting pipelines, and action-tensor generation.
 
 | Component | Responsibility |
 |---|---|
-| `XrAnchorManager` | XR anchor prim setup, dynamic/static synchronization, coordinate-frame transform computation |
+| `XrAnchorManager` | Coordinate-frame transforms, plus XR anchor setup and synchronization when Kit stage services are available |
 | `TeleopSessionLifecycle` | Pipeline building, OpenXR handle acquisition, session create/destroy, action-tensor extraction |
 | `CommandHandler` | Callback registration and XR message-bus command dispatch |
 
 ## Usage
 
-### 1. Configure Your Environment
-
-Add an `isaac_teleop` attribute to your environment config:
-
-```python
-from isaaclab_teleop import (
-    IsaacTeleopCfg,
-    XrCameraFeedCfg,
-    XrCfg,
-)
-
-@configclass
-class MyEnvCfg(ManagerBasedRLEnvCfg):
-    def __post_init__(self):
-        super().__post_init__()
-
-        pipeline, retargeters = my_pipeline_builder()
-        self.isaac_teleop = IsaacTeleopCfg(
-            xr_cfg=XrCfg(
-                anchor_pos=(0.5, 0.0, 0.5),
-                anchor_prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            ),
-            pipeline_builder=lambda: pipeline,
-            retargeters_to_tune=lambda: retargeters,
-            xr_camera_feeds=[
-                XrCameraFeedCfg(camera_name="robot_pov_cam"),
-            ],
-        )
-```
-
-> Both `pipeline_builder` and `retargeters_to_tune` must be **callables** (lambdas or functions)
-> because `@configclass` deep-copies mutable attributes and retargeter objects often contain
-> non-picklable handles.
-
-### 2. Define a Pipeline Builder
+### 1. Define a Pipeline Builder
 
 Create a function that builds your IsaacTeleop retargeting pipeline. The builder should return an
 `OutputCombiner` with an `"action"` key containing the flattened action tensor (typically via
-`TensorReorderer`). Optionally return a list of retargeters to expose in the tuning UI:
+`TensorReorderer`). This complete joint-space example mirrors a six-joint leader arm:
 
 ```python
-from isaacteleop.retargeting_engine.deviceio_source_nodes import ControllersSource
-from isaacteleop.retargeters import (
-    GripperRetargeter, Se3AbsRetargeter, TensorReorderer,
-)
-from isaacteleop.retargeting_engine.interface import OutputCombiner
+_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
-def my_pipeline_builder():
-    controllers = ControllersSource(name="controllers")
-    se3 = Se3AbsRetargeter(cfg, name="ee_pose")
-    # ... connect retargeters and flatten with TensorReorderer ...
-    pipeline = OutputCombiner({"action": reorderer.output("output")})
-    return pipeline, [se3]
+
+def build_pipeline():
+    from isaacteleop.retargeters import JointStateRetargeter, JointStateRetargeterConfig, TensorReorderer
+    from isaacteleop.retargeting_engine.deviceio_source_nodes import JointStateSource
+    from isaacteleop.retargeting_engine.interface import OutputCombiner
+
+    source = JointStateSource(name="leader", collection_id="so101_leader", joint_names=_JOINTS)
+    retargeter = JointStateRetargeter(
+        name="leader",
+        mode="joint",
+        config=JointStateRetargeterConfig(device_joints=_JOINTS, target_joints=_JOINTS),
+    )
+    connected_retargeter = retargeter.connect(
+        {JointStateRetargeter.JOINTS: source.output(JointStateSource.JOINTS)}
+    )
+    reorderer = TensorReorderer(
+        input_config={"joint_targets": _JOINTS},
+        output_order=_JOINTS,
+        name="action_reorderer",
+        input_types={"joint_targets": "scalar"},
+    )
+    connected_reorderer = reorderer.connect(
+        {"joint_targets": connected_retargeter.output("joint_targets")}
+    )
+    return OutputCombiner({"action": connected_reorderer.output("output")})
 ```
+
+### 2. Configure the Device
+
+Add an `isaac_teleop` attribute to your environment configuration using the builder:
+
+```python
+from isaaclab_teleop import IsaacTeleopCfg, XrCfg
+
+
+def make_teleop_config(pipeline_builder) -> IsaacTeleopCfg:
+    return IsaacTeleopCfg(
+        xr_cfg=XrCfg(anchor_pos=(0.5, 0.0, 0.5)),
+        pipeline_builder=pipeline_builder,
+    )
+```
+
+The `pipeline_builder` and optional `retargeters_to_tune` fields must be callables because
+`@configclass` deep-copies mutable attributes and retargeter objects often contain non-picklable
+handles.
 
 ### 3. Run Teleoperation
 
 The existing teleop scripts automatically detect `isaac_teleop` in the environment config:
 
 ```bash
-uv run python scripts/environments/teleoperation/teleop_se3_agent.py \
-    --task My-IsaacTeleop-Env-v0 --xr
+uv run --extra teleop isaaclab teleop run --task My-IsaacTeleop-Env-v0 --xr
 ```
 
 See [XR Camera Feedback](../../../docs/source/features/isaac_teleop.rst#xr-camera-feedback) for
@@ -108,14 +107,14 @@ reference tasks, camera selection, layout, placement, renderer, disable, and kit
 ```python
 from isaaclab_teleop import IsaacTeleopCfg, IsaacTeleopDevice
 
-cfg = IsaacTeleopCfg(pipeline_builder=my_pipeline_builder)
 
-with IsaacTeleopDevice(cfg) as device:
-    device.add_callback("RESET", env.reset)
-    while running:
-        action = device.advance()
-        if action is not None:
-            env.step(action.repeat(num_envs, 1))
+def run_teleoperation(env, cfg: IsaacTeleopCfg) -> None:
+    with IsaacTeleopDevice(cfg) as device:
+        device.add_callback("RESET", env.reset)
+        while True:
+            action = device.advance()
+            if action is not None:
+                env.step(action.repeat(env.num_envs, 1))
 ```
 
 `advance()` returns `None` while waiting for the OpenXR session, so callers can continue
@@ -164,12 +163,21 @@ contend for the GIL at the start of the step.
 
 Teleoperation with Isaac Lab runs in a **single container**. Build the image yourself and run a single container. **Do not use Docker Compose** for this workflow (no multi-container setup). Everything runs inside one container with Isaac Lab.
 
-Inside the container: install Isaac Teleop once (`uv pip install 'isaacteleop[retargeters,cloudxr]~=1.0.0' --extra-index-url https://pypi.nvidia.com`), then start the CloudXR runtime with `--accept-eula` so there is no interactive EULA prompt, and run your teleop script. Example:
+Inside the container, install the full `teleop` extra, then start the CloudXR runtime with
+`--accept-eula` so there is no interactive EULA prompt and run your teleop script. Disable the
+CLI's automatic launcher because the runtime is already running in this example:
 
 ```bash
-uv run python -m isaacteleop.cloudxr --accept-eula &
+uv sync --extra teleop
+uv run --extra teleop python -m isaacteleop.cloudxr --accept-eula &
 source ~/.cloudxr/run/cloudxr.env
-uv run python scripts/tools/record_demos.py --task IsaacContrib-PickPlace-Locomanipulation-G1-Abs --num_demos 5 --dataset_file ./datasets/dataset.hdf5 --xr --visualizer kit
+uv run --extra teleop isaaclab teleop record \
+    --task IsaacContrib-PickPlace-Locomanipulation-G1-Abs \
+    --num_demos 5 \
+    --dataset_file ./datasets/dataset.hdf5 \
+    --xr \
+    --visualizer kit \
+    --no-auto_launch_cloudxr
 ```
 
 In the Isaac Sim UI, set the AR panel to **System OpenXR Runtime** and click **Start XR**. For the full flow and options, see the [CloudXR teleoperation how-to](https://isaac-sim.github.io/IsaacLab/main/source/how-to/cloudxr_teleoperation.html) and [Isaac Teleop Quick Start](https://nvidia.github.io/IsaacTeleop/main/getting_started/quick_start.html).
@@ -180,5 +188,7 @@ For a fully headless experience, replace `--visualizer kit` with `--visualizer n
 ## Dependencies
 
 - **`isaaclab`** -- core Isaac Lab framework
-- **`isaacteleop`** -- IsaacTeleop retargeting engine, device I/O, and session management
-- **`isaacsim`** -- Isaac Sim runtime (provides the Kit XR bridge for OpenXR handle acquisition)
+- **`isaacteleop`** -- IsaacTeleop retargeting engine, device I/O, and session management;
+  `~=1.4.0` is selected by both teleop extras on Linux x86_64.
+- **`teleop-headless`** -- retargeting dependencies without Isaac Sim, UI, or CloudXR.
+- **`teleop`** -- the full XR workflow, including Isaac Sim, UI, and CloudXR.

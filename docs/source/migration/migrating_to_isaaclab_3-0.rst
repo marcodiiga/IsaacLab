@@ -161,7 +161,7 @@ When you instantiate an asset class from the ``isaaclab`` package (e.g., ``Artic
 
    # The factory pattern creates the appropriate backend implementation.
    # No import changes are needed — the same isaaclab imports work regardless of backend.
-   robot = Articulation(cfg=ArticulationCfg(...))
+   robot = Articulation(cfg=ArticulationCfg(prim_path="/World/Robot"))
 
 The factory works by convention: for a class defined in ``isaaclab.assets.articulation``, it
 imports the matching class from the active backend package. The ``isaaclab_physx``,
@@ -708,15 +708,17 @@ when no CLI override is given. Other fields are named presets selectable with
    from isaaclab.physics import PhysxAutoCfg
    from isaaclab.utils.configclass import configclass
    from isaaclab_ov.physics import OvPhysxCfg
+   from isaaclab_newton.physics import NewtonCfg
+   from isaaclab_physx.physics import PhysxCfg
    from isaaclab_tasks.utils import PresetCfg
 
    @configclass
    class MyPhysicsCfg(PresetCfg):
-       isaacsim_physx: PhysxCfg = PhysxCfg(...)
+       isaacsim_physx: PhysxCfg = PhysxCfg()
        ovphysx: OvPhysxCfg = OvPhysxCfg()
        physx: PhysxAutoCfg = PhysxAutoCfg(isaacsim_physx=isaacsim_physx, ovphysx=ovphysx)
        default: PhysxCfg = isaacsim_physx  # used when no override is given
-       newton_mjwarp:  NewtonCfg = NewtonCfg(...)  # selected by physics=newton_mjwarp
+       newton_mjwarp: NewtonCfg = NewtonCfg()  # selected by physics=newton_mjwarp
 
 Selecting a preset at launch
 -----------------------------
@@ -822,17 +824,31 @@ We can provide a Newton-specific config such as:
 
 .. code-block:: python
 
+   from isaaclab.managers import EventTermCfg as EventTerm
+   from isaaclab.managers import SceneEntityCfg
+   from isaaclab.utils import configclass
+   from isaaclab.envs import mdp
+   from isaaclab_tasks.utils import PresetCfg
+
    @configclass
    class EventCfg:
        """Full event config (PhysX-compatible)."""
        robot_physics_material = EventTerm(
            func=mdp.randomize_rigid_body_material,
            mode="startup",
-           params={...},
+           params={
+               "static_friction_range": (0.8, 0.8),
+               "dynamic_friction_range": (0.6, 0.6),
+               "restitution_range": (0.0, 0.0),
+               "num_buckets": 64,
+               "asset_cfg": SceneEntityCfg("robot"),
+           },
        )
        reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
        reset_robot_joints = EventTerm(
-           func=mdp.reset_joints_by_offset, mode="reset", params={...}
+           func=mdp.reset_joints_by_offset,
+           mode="reset",
+           params={"position_range": (-0.1, 0.1), "velocity_range": (-0.1, 0.1)},
        )
 
 
@@ -841,7 +857,9 @@ We can provide a Newton-specific config such as:
        """Newton-compatible events."""
        reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
        reset_robot_joints = EventTerm(
-           func=mdp.reset_joints_by_offset, mode="reset", params={...}
+           func=mdp.reset_joints_by_offset,
+           mode="reset",
+           params={"position_range": (-0.1, 0.1), "velocity_range": (-0.1, 0.1)},
        )
 
 
@@ -1521,11 +1539,23 @@ values:
 
 .. code-block:: python
 
+   from isaaclab.sensors import RayCasterCfg, patterns
+
    # Before (Isaac Lab 2.x)
-   cfg = RayCasterCfg(attach_yaw_only=True, ...)
+   cfg = RayCasterCfg(
+       prim_path="/World/Robot/base",
+       attach_yaw_only=True,
+       mesh_prim_paths=["/World/ground"],
+       pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=(1.6, 1.0)),
+   )
 
    # After (Isaac Lab 3.x)
-   cfg = RayCasterCfg(ray_alignment="yaw", ...)
+   cfg = RayCasterCfg(
+       prim_path="/World/Robot/base",
+       ray_alignment="yaw",
+       mesh_prim_paths=["/World/ground"],
+       pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=(1.6, 1.0)),
+   )
 
 
 Raycasting Kernel Signature Change
@@ -1547,7 +1577,22 @@ If you call the kernel directly, update your launch call:
    wp.launch(
        raycast_dynamic_meshes_kernel,
        dim=(num_meshes, num_envs, num_rays),
-       inputs=[ray_starts, ray_directions, mesh_ids, ...],
+       inputs=[
+           mesh_ids,
+           ray_starts,
+           ray_directions,
+           ray_hits,
+           ray_distance,
+           ray_normal,
+           ray_face_id,
+           ray_mesh_id,
+           mesh_positions,
+           mesh_rotations,
+           max_dist,
+           return_normal,
+           return_face_id,
+           return_mesh_id,
+       ],
    )
 
    # After (Isaac Lab 3.x) -- env_mask is now the first input
@@ -1555,7 +1600,23 @@ If you call the kernel directly, update your launch call:
    wp.launch(
        raycast_dynamic_meshes_kernel,
        dim=(num_meshes, num_envs, num_rays),
-       inputs=[env_mask, ray_starts, ray_directions, mesh_ids, ...],
+       inputs=[
+           env_mask,
+           mesh_ids,
+           ray_starts,
+           ray_directions,
+           ray_hits,
+           ray_distance,
+           ray_normal,
+           ray_face_id,
+           ray_mesh_id,
+           mesh_positions,
+           mesh_rotations,
+           max_dist,
+           return_normal,
+           return_face_id,
+           return_mesh_id,
+       ],
    )
 
 
@@ -2224,11 +2285,11 @@ For full documentation on the new stack, see :ref:`isaac-teleop-feature`.
 Installation Requirement
 ------------------------
 
-Isaac Teleop must now be installed in your Isaac Lab environment:
+Install the full Isaac Teleop workflow through Isaac Lab's managed extra:
 
 .. code-block:: bash
 
-   pip install isaacteleop~=1.0 --extra-index-url https://pypi.nvidia.com
+   uv sync --extra teleop
 
 See :ref:`install-isaac-teleop` for complete installation instructions.
 
@@ -2377,7 +2438,7 @@ lightweight wrapper with explicit ``.torch`` and ``.warp`` accessors:
   .. code-block:: python
 
      # Just works — no .warp needed
-     wp.launch(my_kernel, inputs=[robot.data.joint_pos], ...)
+     wp.launch(my_kernel, dim=robot.data.joint_pos.shape, inputs=[robot.data.joint_pos])
 
 - **Torch functions:** ``ProxyArray`` implements ``__torch_function__``, so ``torch.*`` operations
   accept it directly. During the deprecation period this emits a one-time warning, but works:

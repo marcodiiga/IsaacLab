@@ -589,6 +589,8 @@ use ``uv pip install "isaaclab[<extra>]"``; for a uv project, use
      - The corresponding visualizer.
    * - ``mimic`` / ``teleop``
      - Imitation learning / XR teleoperation.
+   * - ``teleop-headless``
+     - Isaac Teleop retargeting without Isaac Sim, UI, or CloudXR (Linux x86_64).
    * - ``tetrahedralization`` / ``video``
      - Mesh tetrahedralization / video recording.
    * - ``leapp``
@@ -602,9 +604,9 @@ use ``uv pip install "isaaclab[<extra>]"``; for a uv project, use
 Extras can be combined freely: none of them conflict, so any set of extras -- including
 the Isaac Sim and OV backend stacks together -- resolves into a single environment.
 Use ``all`` to get every backend, RL library, and visualizer in one flag. The
-specialized extras (``rlinf``, ``mimic``, ``teleop``, ``tetrahedralization``, ``video``,
-``leapp``) and the developer ``test`` tooling are not part of ``all``; request them by
-name.
+specialized extras (``rlinf``, ``mimic``, ``teleop``, ``teleop-headless``,
+``tetrahedralization``, ``video``, ``leapp``) and the developer ``test`` tooling are not
+part of ``all``; request them by name.
 
 .. isaaclab-uv-wheel-install::
 
@@ -916,11 +918,12 @@ Manage the workstation from the Automator container:
 
 .. code-block:: bash
 
-   ./stop <deployment-name>
-   ./start <deployment-name>
-   ./upload <deployment-name>
-   ./download <deployment-name>
-   ./destroy <deployment-name>
+   deployment_name=isaaclab-workstation
+   ./stop "$deployment_name"
+   ./start "$deployment_name"
+   ./upload "$deployment_name"
+   ./download "$deployment_name"
+   ./destroy "$deployment_name"
 
 Preserve the ``state`` directory because it contains the deployment metadata.
 

@@ -136,6 +136,21 @@ def test_wheel_builder_keeps_tetrahedralization_explicit(tmp_path):
         assert not any(dep.startswith("pytetwild") for dep in deps)
 
 
+def test_wheel_builder_keeps_teleop_headless_kitless(tmp_path):
+    """The published headless teleop extra must omit interactive runtime dependencies."""
+    generated = _generate_wheel_pyproject(tmp_path)
+    dependencies = generated["project"]["optional-dependencies"]["teleop-headless"]
+
+    assert any(dep.startswith("isaacteleop[retargeters]~=1.4.0") for dep in dependencies)
+    assert any(dep.startswith("dex-retargeting==0.5.0") for dep in dependencies)
+    assert not any(dep.startswith("isaaclab") for dep in dependencies)
+    assert not any(dep.startswith("isaacsim") for dep in dependencies)
+    isaacteleop = next(dep for dep in dependencies if dep.startswith("isaacteleop"))
+    assert "[retargeters]" in isaacteleop
+    assert "cloudxr" not in isaacteleop.lower()
+    assert ",ui" not in isaacteleop.lower()
+
+
 def test_wheel_builder_uv_overrides_match_root_pyproject(tmp_path):
     """The wheel resolver override file must mirror the root uv overrides exactly."""
     with (_repo_root() / "pyproject.toml").open("rb") as f:

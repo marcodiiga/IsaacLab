@@ -19,9 +19,12 @@ out via ``sys.modules`` so these tests run in a plain Python environment.
 
 from __future__ import annotations
 
+import re
+import subprocess
 import sys
 import time
-from types import ModuleType
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,7 +106,9 @@ def _restore_stubs():
 
 _install_stubs()
 
+from isaaclab_teleop import TeleopStepInfo  # noqa: E402
 from isaaclab_teleop.isaac_teleop_cfg import IsaacTeleopCfg  # noqa: E402
+from isaaclab_teleop.isaac_teleop_device import IsaacTeleopDevice  # noqa: E402
 from isaaclab_teleop.session_lifecycle import TeleopSessionLifecycle  # noqa: E402
 
 _restore_stubs()
@@ -128,14 +133,33 @@ def _make_failing_lifecycle(error: Exception) -> TeleopSessionLifecycle:
     lifecycle._pipeline = object()
     session = MagicMock()
     session.step.side_effect = error
+    session.last_step_info = _make_step_info()
     lifecycle._session = session
     return lifecycle
+
+
+def _make_step_info(**overrides) -> SimpleNamespace:
+    """Return an upstream-shaped metadata object without importing the optional package."""
+    values = {
+        "returned_frame_id": None,
+        "submitted_frame_id": None,
+        "returned_age_frames": None,
+        "returned_age_s": None,
+        "compute_duration_s": None,
+        "dropped_submissions": 0,
+        "ran_synchronously": False,
+        "frame_deadline_miss": False,
+        "worker_exception": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 class TestStepFailureDiagnosis:
     def test_pipeline_error_with_active_xr_sets_holdoff(self):
         lifecycle = _make_failing_lifecycle(ValueError("Found zero norm quaternions in `quat`."))
         session = lifecycle._session
+        session.last_step_info = _make_step_info(worker_exception=RuntimeError("retarget worker failed"))
         with (
             patch.object(TeleopSessionLifecycle, "_kit_xr_session_is_active", return_value=True),
             patch.object(lifecycle, "_build_external_inputs", return_value=None),
@@ -144,6 +168,7 @@ class TestStepFailureDiagnosis:
         session.__exit__.assert_called_once()
         assert lifecycle._session is None
         assert lifecycle._restart_holdoff_until > time.monotonic()
+        assert lifecycle.last_step_info == TeleopStepInfo(worker_failed=True, worker_error_type="RuntimeError")
 
     def test_external_xr_teardown_has_no_holdoff(self):
         lifecycle = _make_failing_lifecycle(RuntimeError("XR_ERROR_INSTANCE_LOST"))
@@ -175,3 +200,121 @@ class TestRestartHoldoff:
         with patch.object(lifecycle, "_try_start_session", return_value=False) as try_start:
             assert lifecycle.step() is None
         try_start.assert_called_once()
+
+
+class TestLastStepInfo:
+    def test_lifecycle_returns_none_without_active_session(self):
+        lifecycle = _make_lifecycle()
+
+        assert lifecycle.last_step_info is None
+
+    def test_lifecycle_forwards_active_session_metadata(self):
+        lifecycle = _make_lifecycle()
+        step_info = _make_step_info(
+            returned_frame_id=6,
+            submitted_frame_id=7,
+            returned_age_frames=1,
+            returned_age_s=0.02,
+            compute_duration_s=0.004,
+            dropped_submissions=2,
+            frame_deadline_miss=True,
+        )
+        lifecycle._session = MagicMock(last_step_info=step_info)
+
+        assert lifecycle.last_step_info == TeleopStepInfo(
+            returned_frame_id=6,
+            submitted_frame_id=7,
+            returned_age_frames=1,
+            returned_age_s=0.02,
+            compute_duration_s=0.004,
+            dropped_submissions=2,
+            frame_deadline_miss=True,
+        )
+
+    def test_lifecycle_exposes_default_metadata_before_first_step(self):
+        lifecycle = _make_lifecycle()
+        lifecycle._session = MagicMock(last_step_info=_make_step_info())
+
+        assert lifecycle.last_step_info == TeleopStepInfo()
+
+    def test_lifecycle_tolerates_session_without_metadata_api(self):
+        lifecycle = _make_lifecycle()
+        lifecycle._session = SimpleNamespace()
+
+        assert lifecycle.last_step_info is None
+
+    def test_dead_session_teardown_tolerates_missing_metadata_api(self):
+        lifecycle = _make_lifecycle()
+        exit_session = MagicMock()
+        lifecycle._session = SimpleNamespace(__exit__=exit_session)
+
+        lifecycle._teardown_dead_session()
+
+        exit_session.assert_called_once_with(None, None, None)
+        assert lifecycle._session is None
+        assert lifecycle.last_step_info is None
+
+    def test_device_forwards_lifecycle_metadata(self):
+        device = object.__new__(IsaacTeleopDevice)
+        step_info = TeleopStepInfo(returned_frame_id=4, submitted_frame_id=5)
+        device._session_lifecycle = MagicMock(last_step_info=step_info)
+
+        assert device.last_step_info is step_info
+
+
+def test_device_imports_and_constructs_without_carb():
+    """Kitless consumers can construct the device when the Kit carb module is absent."""
+    script = """
+import importlib.abc
+import sys
+
+class BlockCarb(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "carb" or fullname.startswith("carb."):
+            raise ModuleNotFoundError("carb deliberately unavailable")
+        return None
+
+for name in tuple(sys.modules):
+    if name == "carb" or name.startswith("carb."):
+        del sys.modules[name]
+sys.meta_path.insert(0, BlockCarb())
+from isaaclab_teleop import IsaacTeleopCfg, IsaacTeleopDevice, TeleopStepInfo
+device = IsaacTeleopDevice(
+    IsaacTeleopCfg(pipeline_builder=lambda: None),
+    use_kit_xr_bridge=False,
+    mcap_replay_path="/tmp/nonexistent-replay",
+)
+assert device.last_step_info is None
+assert TeleopStepInfo is not None
+del device
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)
+
+
+@pytest.mark.parametrize(
+    ("use_kit_xr_bridge", "mcap_replay_path"),
+    [(True, "/tmp/replay"), (False, None)],
+)
+def test_device_preserves_stage_aware_anchor_manager(use_kit_xr_bridge, mcap_replay_path):
+    """Replay and standalone modes keep dynamic anchor transforms when Kit is available."""
+    cfg = IsaacTeleopCfg(pipeline_builder=lambda: None)
+
+    with patch("isaaclab_teleop.isaac_teleop_device.XrAnchorManager") as anchor_manager:
+        IsaacTeleopDevice(
+            cfg,
+            use_kit_xr_bridge=use_kit_xr_bridge,
+            mcap_replay_path=mcap_replay_path,
+        )
+
+    anchor_manager.assert_called_once_with(cfg.xr_cfg)
+
+
+def test_replay_agent_disables_kit_xr_bridge():
+    """Replay bypasses live Kit handles while preserving stage-aware anchor transforms."""
+    repo_root = Path(__file__).resolve().parents[3]
+    replay_agent = (repo_root / "scripts/environments/teleoperation/teleop_replay_agent.py").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"create_isaac_teleop_device\([\s\S]*?use_kit_xr_bridge=False,[\s\S]*?mcap_replay_path=",
+        replay_agent,
+    )

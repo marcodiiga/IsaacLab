@@ -160,20 +160,14 @@ class IsaacTeleopCfg:
     Example:
         .. code-block:: python
 
-            def build_pipeline():
-                controllers = ControllersSource(name="controllers")
-                se3 = Se3AbsRetargeter(cfg, name="ee_pose")
-                # ... connect and flatten with TensorReorderer ...
-                pipeline = OutputCombiner({"action": reorderer.output("output")})
-                return pipeline, [se3]  # return retargeters separately
+            from isaaclab_teleop import IsaacTeleopCfg, XrCfg
 
 
-            pipeline, retargeters = build_pipeline()
-            teleop_cfg = IsaacTeleopCfg(
-                xr_cfg=XrCfg(anchor_pos=(0.5, 0.0, 0.5)),
-                pipeline_builder=lambda: pipeline,
-                retargeters_to_tune=lambda: retargeters,
-            )
+            def make_teleop_config(pipeline_builder) -> IsaacTeleopCfg:
+                return IsaacTeleopCfg(
+                    xr_cfg=XrCfg(anchor_pos=(0.5, 0.0, 0.5)),
+                    pipeline_builder=pipeline_builder,
+                )
     """
 
     xr_cfg: XrCfg = field(default_factory=XrCfg)
@@ -283,10 +277,8 @@ class IsaacTeleopCfg:
 
     Example::
 
-        IsaacTeleopCfg(
-            target_frame_prim_path="/World/envs/env_0/Robot/base_link",
-            ...
-        )
+        def use_robot_base_frame(teleop_cfg: IsaacTeleopCfg) -> None:
+            teleop_cfg.target_frame_prim_path = "/World/envs/env_0/Robot/base_link"
     """
 
     app_name: str = "IsaacLabTeleop"

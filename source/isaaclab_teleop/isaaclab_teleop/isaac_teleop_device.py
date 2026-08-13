@@ -18,6 +18,7 @@ from .command_handler import CommandHandler
 from .control_events import ControlEvents
 from .isaac_teleop_cfg import IsaacTeleopCfg
 from .session_lifecycle import TeleopSessionLifecycle
+from .step_info import TeleopStepInfo
 from .xr_anchor_manager import XrAnchorManager
 
 if TYPE_CHECKING:
@@ -35,8 +36,8 @@ class IsaacTeleopDevice:
     This device provides an interface between IsaacTeleop's retargeting pipeline
     and Isaac Lab environments.  It composes three focused collaborators:
 
-    * :class:`XrAnchorManager` -- XR anchor prim setup, synchronization,
-      and coordinate-frame transform computation.
+    * :class:`XrAnchorManager` -- coordinate-frame transform computation,
+      plus XR anchor prim setup and synchronization when Kit XR is available.
     * :class:`TeleopSessionLifecycle` -- pipeline building, OpenXR handle
       acquisition, session creation/destruction, and action-tensor extraction.
     * :class:`CommandHandler` -- callback registration for START / STOP / RESET
@@ -86,21 +87,24 @@ class IsaacTeleopDevice:
             with IsaacTeleopDevice(cfg) as device:
                 while running:
                     action = device.advance()
-                    env.step(action.repeat(num_envs, 1))
+                    if action is not None:
+                        env.step(action.repeat(num_envs, 1))
 
             # Config-driven rebase into robot base frame
             cfg.target_frame_prim_path = "/World/Robot/base_link"
             with IsaacTeleopDevice(cfg) as device:
                 while running:
                     action = device.advance()
-                    env.step(action.repeat(num_envs, 1))
+                    if action is not None:
+                        env.step(action.repeat(num_envs, 1))
 
             # Explicit rebase into robot base frame
             with IsaacTeleopDevice(cfg) as device:
                 while running:
                     robot_T_world = get_robot_base_transform()
                     action = device.advance(target_T_world=robot_T_world)
-                    env.step(action.repeat(num_envs, 1))
+                    if action is not None:
+                        env.step(action.repeat(num_envs, 1))
     """
 
     def __init__(
@@ -152,6 +156,9 @@ class IsaacTeleopDevice:
         """
         self._cfg = cfg
 
+        # Anchor transforms remain stage-aware whenever Kit happens to be
+        # available, including replay and standalone CloudXR workflows. The
+        # manager's lazy imports make the same path safe when Kit is absent.
         self._anchor_manager = XrAnchorManager(cfg.xr_cfg)
         self._command_handler = CommandHandler()
         self._session_lifecycle = TeleopSessionLifecycle(
@@ -212,10 +219,9 @@ class IsaacTeleopDevice:
     def __enter__(self) -> IsaacTeleopDevice:
         """Enter the context manager and prepare the IsaacTeleop session.
 
-        Builds the retargeting pipeline and attempts to acquire OpenXR handles
-        from Kit's XR bridge extension.  If the handles are not yet available
-        (e.g. the user has not clicked "Start AR"), session creation is deferred
-        and will be retried automatically on each :meth:`advance` call.
+        Builds the retargeting pipeline and starts the configured live,
+        standalone, or replay session. Kit XR sessions are deferred when bridge
+        handles are unavailable and retried automatically by :meth:`advance`.
 
         Returns:
             Self for context manager protocol.
@@ -277,6 +283,18 @@ class IsaacTeleopDevice:
         default (no-op) :class:`ControlEvents`.
         """
         return self._session_lifecycle.last_control_events
+
+    @property
+    def last_step_info(self) -> TeleopStepInfo | None:
+        """Metadata from the latest teleop step, or ``None`` before a session starts.
+
+        The returned metadata distinguishes the frame submitted by the most
+        recent :meth:`advance` call from the completed frame returned by that
+        call, and reports result age, compute time, dropped submissions, and
+        deadline misses. Failure metadata remains available after the session
+        is torn down and until a new session starts or the device is stopped.
+        """
+        return self._session_lifecycle.last_step_info
 
     def add_callback(self, key: str, func: Callable) -> None:
         """Add a callback function for teleop commands.
@@ -560,15 +578,14 @@ def create_isaac_teleop_device(
     enable_debug_visualization: bool = False,
     haptic_cfg: HapticFeedbackCfg | None = None,
 ) -> IsaacTeleopDevice:
-    """Create an :class:`IsaacTeleopDevice` with required Omniverse extension setup.
+    """Create an :class:`IsaacTeleopDevice` with mode-appropriate setup.
 
-    This helper centralises the boilerplate that every script must execute
-    before constructing an :class:`IsaacTeleopDevice`:
+    This helper centralises the boilerplate required before constructing an
+    :class:`IsaacTeleopDevice`:
 
     1. Disable default OpenXR input bindings (prevents conflicts).
-    2. Enable the ``isaacsim.kit.xr.teleop.bridge`` extension (live mode
-       only -- replay mode skips this since it never touches the XR
-       runtime).
+    2. Enable the ``isaacsim.kit.xr.teleop.bridge`` extension only for a live
+       Kit XR session. Replay and standalone sessions leave it untouched.
     3. Optionally override :attr:`IsaacTeleopCfg.sim_device` so action tensors
        land on the same device the caller uses for the simulation.
 

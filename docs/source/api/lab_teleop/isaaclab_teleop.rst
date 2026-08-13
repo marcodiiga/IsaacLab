@@ -11,6 +11,7 @@ isaaclab_teleop
 
     IsaacTeleopCfg
     IsaacTeleopDevice
+    TeleopStepInfo
     XrCameraFeedCfg
     XrCameraFeedLayoutCfg
     XrCameraFeedSession
@@ -63,6 +64,26 @@ Device
     :show-inheritance:
 
 .. autofunction:: create_isaac_teleop_device
+
+Step metadata
+-------------
+
+.. autoclass:: TeleopStepInfo
+   :members:
+
+Kitless retargeting
+-------------------
+
+When building a custom replay or retargeting integration that does not need Isaac Sim, the
+tuning UI, or CloudXR, install the ``teleop-headless`` extra. It can be combined with a
+standalone physics backend:
+
+.. code-block:: bash
+
+   uv sync --extra ovphysx --extra teleop-headless
+
+The native Isaac Teleop retargeting dependencies in this extra are available on Linux x86_64.
+Use the full ``teleop`` extra for live XR workflows that require Kit, UI, or CloudXR support.
 
 Haptic Feedback
 ---------------

@@ -18,6 +18,7 @@ __all__ = [
     "SupportsControlEvents",
     "SystemCheckItem",
     "SystemCheckResult",
+    "TeleopStepInfo",
     "TELEOP_CONTROL_CHANNEL_UUID",
     "XrCameraFeedCfg",
     "XrCameraFeedLayoutCfg",
@@ -51,6 +52,7 @@ from .isaac_teleop_cfg import (
     XrCameraFeedLayoutCfg,
 )
 from .isaac_teleop_device import IsaacTeleopDevice, create_isaac_teleop_device
+from .step_info import TeleopStepInfo
 from .system_check import SystemCheckItem, SystemCheckResult, check_system_requirements
 from .xr_anchor_utils import XrAnchorSynchronizer
 from .xr_cfg import XrAnchorRotationMode, XrCfg, remove_camera_configs

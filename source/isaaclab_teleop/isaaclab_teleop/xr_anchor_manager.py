@@ -9,22 +9,21 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-import carb
-
-from .xr_anchor_utils import XrAnchorSynchronizer
 from .xr_cfg import XrCfg
+
+if TYPE_CHECKING:
+    from .xr_anchor_utils import XrAnchorSynchronizer
 
 # Import XR components with fallback for testing
 XRCore = None
 XRCoreEventType = None
 with contextlib.suppress(ModuleNotFoundError):
     from omni.kit.xr.core import XRCore, XRCoreEventType
-
-from isaaclab.sim.utils.prims import create_prim as _create_prim
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +54,12 @@ def _xr_anchor_prim_exists(prim_path: str) -> bool:
 
 
 class XrAnchorManager:
-    """Manages XR anchor prim creation, synchronization, and world transform computation.
+    """Manages world transforms and optional Kit XR stage-anchor synchronization.
 
-    This class is responsible for:
-
-    1. Creating the XR anchor prim in the USD stage
-    2. Configuring carb settings for XR rendering
-    3. Managing the :class:`XrAnchorSynchronizer` that keeps the anchor
-       aligned with a reference prim (for dynamic anchoring)
-    4. Computing the 4x4 world transform matrix that converts OpenXR
-       local-space poses into the Isaac Lab world frame
+    The manager always computes the 4x4 transform that converts OpenXR
+    local-space poses into the Isaac Lab world frame. When
+    ``configure_xr_stage`` is ``True``, it also creates the XR anchor prim,
+    configures XR rendering settings, and synchronizes dynamic anchors.
     """
 
     # Basis-change rotation from OpenXR (Y-up) to USD/Isaac Lab (Z-up).
@@ -77,18 +72,22 @@ class XrAnchorManager:
         dtype=np.float64,
     )
 
-    def __init__(self, xr_cfg: XrCfg):
+    def __init__(self, xr_cfg: XrCfg, configure_xr_stage: bool = True):
         """Initialize the XR anchor manager.
 
-        Creates the anchor prim, configures carb XR settings, and sets up
-        the optional anchor synchronizer for dynamic anchoring.
+        Computes the static anchor transform. When ``configure_xr_stage`` is
+        enabled, also creates the anchor prim, configures XR settings, and
+        sets up the optional synchronizer for dynamic anchoring.
 
         Args:
             xr_cfg: XR configuration specifying anchor position, rotation,
                 and optional dynamic anchoring prim path.
+            configure_xr_stage: Whether to create and configure the Kit XR
+                stage anchor. Disable this only when the caller intentionally
+                does not need stage-aware dynamic anchor transforms.
         """
         self._xr_cfg = xr_cfg
-        self._xr_core = XRCore.get_singleton() if XRCore is not None else None
+        self._xr_core = XRCore.get_singleton() if configure_xr_stage and XRCore is not None else None
         self._xr_pre_sync_update_subscription = None
 
         # Resolve the headset anchor path
@@ -106,24 +105,34 @@ class XrAnchorManager:
         # for each run, but the prim is stage-scoped and survives
         # per-run device teardown). XrCfg.anchor_rot is xyzw; create_prim
         # orientation expects xyzw.
-        if not _xr_anchor_prim_exists(self._xr_anchor_headset_path):
+        if configure_xr_stage and not _xr_anchor_prim_exists(self._xr_anchor_headset_path):
             x, y, z, w = self._xr_cfg.anchor_rot
             try:
+                from isaaclab.sim.utils.prims import create_prim
+
                 pos = np.asarray(self._xr_cfg.anchor_pos, dtype=np.float64)
                 quat_xyzw = np.asarray([x, y, z, w], dtype=np.float64)
-                _create_prim(self._xr_anchor_headset_path, prim_type="Xform", position=pos, orientation=quat_xyzw)
+                create_prim(self._xr_anchor_headset_path, prim_type="Xform", position=pos, orientation=quat_xyzw)
             except Exception as e:
                 logger.warning(f"Failed to create XR anchor prim: {e}")
 
         # Configure carb settings for XR rendering
-        if hasattr(carb, "settings"):
-            carb.settings.get_settings().set_float("/persistent/xr/render/nearPlane", self._xr_cfg.near_plane)
-            carb.settings.get_settings().set_string("/persistent/xr/anchorMode", "custom anchor")
-            carb.settings.get_settings().set_string("/xrstage/customAnchor", self._xr_anchor_headset_path)
+        if configure_xr_stage:
+            try:
+                import carb
+
+                if hasattr(carb, "settings"):
+                    carb.settings.get_settings().set_float("/persistent/xr/render/nearPlane", self._xr_cfg.near_plane)
+                    carb.settings.get_settings().set_string("/persistent/xr/anchorMode", "custom anchor")
+                    carb.settings.get_settings().set_string("/xrstage/customAnchor", self._xr_anchor_headset_path)
+            except (ImportError, ModuleNotFoundError):
+                logger.info("carb.settings not available; skipping XR rendering anchor settings")
 
         self._anchor_sync: XrAnchorSynchronizer | None = None
         if self._xr_core is not None:
             try:
+                from .xr_anchor_utils import XrAnchorSynchronizer
+
                 self._anchor_sync = XrAnchorSynchronizer(
                     xr_core=self._xr_core,
                     xr_cfg=self._xr_cfg,
